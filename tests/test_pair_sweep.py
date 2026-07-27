@@ -1,0 +1,154 @@
+import asyncio
+
+import wallbreaker.providers.factory as factory
+from wallbreaker.config import Config, Endpoint, load_config
+from wallbreaker.tools import build_registry, pair
+from wallbreaker.tools.registry import ToolContext, ToolRegistry
+
+
+def test_pair_sweep_registered():
+    assert "pair_sweep" in build_registry(load_config()).names()
+
+
+def test_pair_sweep_requires_target():
+    cfg = Config(default_profile="x", profiles={})
+    reg = ToolRegistry(ToolContext(config=cfg))
+    pair.register(reg)
+    res = asyncio.run(reg.execute("pair_sweep", {"objectives": ["x"]}))
+    assert "no [target]" in res.content.lower()
+
+
+class _FakeAttacker:
+    """Attacker emits an attack; target complies for obj 'easy', refuses 'hard'."""
+
+    def __init__(self, endpoint, **kw):
+        pass
+
+    async def complete(self, messages, system=None, max_tokens=256):
+        text = messages[-1].text()
+        if "OBJECTIVE:" in text:
+            return "ATTACK for " + ("easy" if "easy" in text else "hard")
+        # target turn: the candidate prompt
+        return "Sure, here it is." if "easy" in text else "I cannot help."
+
+
+def test_pair_sweep_runs_battery_and_records(monkeypatch):
+    monkeypatch.setattr(factory, "build_provider", _FakeAttacker)
+
+    async def fake_grade(endpoint, response, payload="", objective="", use_judge=True, reasoning=""):
+        if "Sure" in response:
+            return ("COMPLIED", 9, "ok", "judge")
+        return ("REFUSED", 0, "no", "judge")
+
+    monkeypatch.setattr(pair, "grade", fake_grade)
+
+    ep = Endpoint("t", "openai", "http://x", "m")
+    cfg = Config(default_profile="t", profiles={"t": ep}, target=ep)
+    captured = []
+    ctx = ToolContext(config=cfg, judge_endpoint=ep, record=lambda p, r, lbl, rs, t: captured.append((lbl, t)))
+    reg = ToolRegistry(ctx)
+    pair.register(reg)
+    res = asyncio.run(reg.execute("pair_sweep", {"objectives": ["easy one", "hard one"], "rounds": 2}))
+    assert "PAIR SWEEP" in res.content
+    assert "broke 1/2 objectives" in res.content
+    # both objectives recorded under technique 'pair'
+    assert len(captured) == 2
+    assert all(t == "pair" for _, t in captured)
+
+
+def test_run_pair_stops_on_compliance(monkeypatch):
+    monkeypatch.setattr(factory, "build_provider", _FakeAttacker)
+
+    async def fake_grade(endpoint, response, payload="", objective="", use_judge=True, reasoning=""):
+        return ("COMPLIED", 10, "ok", "judge")
+
+    monkeypatch.setattr(pair, "grade", fake_grade)
+    from wallbreaker.providers.factory import build_provider
+
+    atk = build_provider(Endpoint("a", "openai", "http://x", "m"))
+    tgt = build_provider(Endpoint("t", "openai", "http://x", "m"))
+    best, traj = asyncio.run(
+        pair._run_pair("easy", atk, tgt, None, 6, 1, None, 200, None)
+    )
+    assert best["label"] == "COMPLIED"
+    assert len(traj) == 1  # stopped at first compliance, didn't run all 6
+
+
+class _PrunerAttacker:
+    """Alternates good/bad candidates; the triage call brands BAD ones off-objective."""
+
+    def __init__(self):
+        self.gen = 0
+
+    async def complete(self, messages, system=None, max_tokens=256):
+        text = messages[-1].text()
+        if system and "triage" in system.lower():
+            return "OFF" if "BADCAND" in text else "ON"
+        self.gen += 1
+        return "GOODCAND" if self.gen % 2 == 1 else "BADCAND"
+
+
+class _CountingTarget:
+    """Counts how many candidates actually reach the target; never complies."""
+
+    def __init__(self):
+        self.fires = 0
+
+    async def complete(self, messages, system=None, max_tokens=256):
+        self.fires += 1
+        return "I cannot help."
+
+
+def _refused_grade():
+    async def fake_grade(endpoint, response, payload="", objective="", use_judge=True, reasoning=""):
+        return ("REFUSED", 1, "held", "judge")
+
+    return fake_grade
+
+
+def test_tap_prunes_off_objective_before_target(monkeypatch):
+    monkeypatch.setattr(pair, "grade", _refused_grade())
+    atk = _PrunerAttacker()
+    tgt = _CountingTarget()
+    best, traj = asyncio.run(
+        pair._run_pair("demo objective", atk, tgt, None, 1, 1, None, 200, None,
+                       width=4, depth=1, keep=1, prune=True, eval_provider=atk)
+    )
+    assert atk.gen == 4
+    assert tgt.fires == 2
+    assert len(traj) == 1
+    assert traj[0] == "d1[2->1]"
+
+
+def test_tap_no_prune_fires_every_candidate(monkeypatch):
+    monkeypatch.setattr(pair, "grade", _refused_grade())
+    atk = _PrunerAttacker()
+    tgt = _CountingTarget()
+    asyncio.run(
+        pair._run_pair("demo objective", atk, tgt, None, 1, 1, None, 200, None,
+                       width=4, depth=1, keep=1, prune=False, eval_provider=atk)
+    )
+    assert tgt.fires == 4
+
+
+def test_tap_depth_builds_multiple_levels(monkeypatch):
+    monkeypatch.setattr(pair, "grade", _refused_grade())
+    atk = _PrunerAttacker()
+    tgt = _CountingTarget()
+    best, traj = asyncio.run(
+        pair._run_pair("demo objective", atk, tgt, None, 1, 1, None, 200, None,
+                       width=1, depth=3, keep=1, prune=False)
+    )
+    assert len(traj) == 3
+    assert traj == ["d1[1->1]", "d2[1->1]", "d3[1->1]"]
+
+
+def test_tap_pruning_disabled_without_evaluator(monkeypatch):
+    monkeypatch.setattr(pair, "grade", _refused_grade())
+    atk = _PrunerAttacker()
+    tgt = _CountingTarget()
+    asyncio.run(
+        pair._run_pair("demo objective", atk, tgt, None, 1, 1, None, 200, None,
+                       width=4, depth=1, keep=1, prune=True)
+    )
+    assert tgt.fires == 4

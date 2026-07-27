@@ -1,0 +1,80 @@
+import asyncio
+
+from wallbreaker.config import Config, Endpoint
+from wallbreaker.tools import author_persona, system_prompts as sp
+from wallbreaker.tools.registry import ToolContext, ToolRegistry
+
+
+def _reg(ctx=None):
+    ctx = ctx or ToolContext(config=Config(default_profile="x", profiles={}))
+    reg = ToolRegistry(ctx)
+    sp.register(reg)
+    return reg
+
+
+def test_corpus_present_and_multivendor():
+    assert sp.is_present()
+    vendors = sp.list_vendors()
+    for v in ("Anthropic", "OpenAI", "Google", "xAI"):
+        assert v in vendors
+    assert len(sp._all()) > 50
+
+
+def test_match_target_routes_to_right_vendor():
+    cases = {
+        "anthropic/claude-opus-4.6": "Anthropic",
+        "google/gemini-3-pro": "Google",
+        "x-ai/grok-4.2": "xAI",
+        "openai/gpt-5.4-thinking": "OpenAI",
+        "qwen/qwen-3.6-plus": "Qwen",
+    }
+    for mid, vendor in cases.items():
+        m = sp.match_target(mid)
+        assert m is not None, mid
+        assert sp._rel(m).split("/", 1)[0] == vendor, (mid, sp._rel(m))
+
+
+def test_match_target_unknown_vendor_returns_none():
+    assert sp.match_target("some-local/random-7b-frankenmodel") is None
+    assert sp.match_target("") is None
+
+
+def test_format_digest_extracts_native_conventions():
+    m = sp.match_target("anthropic/claude-opus-4.6")
+    digest = sp.format_digest(m)
+    assert "NATIVE SYSTEM-PROMPT FORMAT" in digest
+    assert "<refusal_handling>" in digest          # a real Claude section tag
+    assert "opening style" in digest
+
+
+def test_get_by_model_id_and_by_path():
+    ctx = ToolContext(config=Config(default_profile="x", profiles={}))
+    reg = _reg(ctx)
+    res = asyncio.run(reg.execute("sysprompt_get", {"name": "openai/gpt-4o"}))
+    assert "OpenAI/gpt-4o" in res.content
+    res2 = asyncio.run(reg.execute("sysprompt_get", {"name": "does-not-exist-xyz"}))
+    assert "No prompt matched" in res2.content
+
+
+def test_search_finds_lines():
+    reg = _reg()
+    res = asyncio.run(reg.execute("sysprompt_search", {"query": "refusal"}))
+    assert ".md:" in res.content
+
+
+def test_native_tool_uses_configured_target():
+    ep = Endpoint("t", "openai", "http://x", "anthropic/claude-opus-4.6")
+    ctx = ToolContext(config=Config(default_profile="t", profiles={"t": ep}, target=ep))
+    res = asyncio.run(_reg(ctx).execute("sysprompt_native", {}))
+    assert "NATIVE SYSTEM-PROMPT FORMAT" in res.content
+    assert "Anthropic" in res.content
+
+
+def test_author_persona_target_hint_includes_native_format():
+    ep = Endpoint("t", "openai", "http://x", "anthropic/claude-opus-4.6")
+    ctx = ToolContext(config=Config(default_profile="t", profiles={"t": ep}, target=ep))
+    hint = author_persona._target_hint(ctx)
+    assert "NATIVE SYSTEM-PROMPT FORMAT" in hint
+    # and it flows into the authoring brief
+    brief = author_persona.method_brief("do X", target_hint=hint, domain="general")
+    assert "TARGET INTEL" in brief and "<refusal_handling>" in brief

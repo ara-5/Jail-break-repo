@@ -1,0 +1,57 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# secrets & local state
+.env
+config.toml
+.wallbreaker_state.json
+.rth_state.json
+
+# fetched-at-runtime jailbreak corpora (not redistributed)
+library/
+
+# runtime output & generated attack artifacts (never commit jailbreak output)
+wb_runs/
+wb_images/
+wb_artifacts/
+wb_stego/
+findings/
+sessions/
+
+# loose working jailbreak drafts, seeds & scraped research (never publish)
+.firecrawl/
+wb_seeds/
+casefile_*.md
+sys_*.md
+universal_*.md
+user_atlas_*.md
+user_wrapper_*.md
+deployment_guide.md
+harness_system_prompt.md
+noise_log.md
+prompt.txt
+validate_sweep.py
+image_wall_research_*.md
+# legacy pre-rebrand output dirs
+rth_runs/
+rth_images/
+rth_artifacts/
+rth_prompts/
+rth_tasks/
+
+# dashboard frontend build
+node_modules/
+wallbreaker/dashboard/web/dist/
+*.tsbuildinfo
+wallbreaker/dashboard/web/vite.config.js
+wallbreaker/dashboard/web/vite.config.d.ts
+
+.pytest_cache/
+.serena/
+*.log
+.DS_Store

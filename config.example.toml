@@ -1,0 +1,116 @@
+default_profile = "openrouter"
+
+[profiles.openrouter]
+protocol = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "anthropic/claude-sonnet-4.5"
+
+[profiles.zai]
+protocol = "anthropic"
+base_url = "https://api.z.ai/api/anthropic"
+api_key_env = "ZAI_API_KEY"
+model = "glm-4.6"
+
+[profiles.zai-openai]
+protocol = "openai"
+base_url = "https://api.z.ai/api/paas/v4"
+api_key_env = "ZAI_API_KEY"
+model = "glm-4.6"
+
+[profiles.custom]
+protocol = "openai"
+base_url = "http://localhost:1234/v1"
+api_key_env = "LOCAL_API_KEY"
+model = "local-model"
+
+# Use the local Claude Code CLI as the red-teamer brain (no base_url/api_key - the
+# `claude` CLI authenticates itself). Select with default_profile="claude-code" or
+# `/brain claude-code`. Claude Code becomes the attacker LLM that authors personas and
+# attack turns for every offensive tool (author_persona, pair, crescendo, ...).
+# model is a CLI alias (sonnet/opus/haiku) or a full model id.
+# system_prompt_file (optional): your own operator system prompt; it becomes the brain's
+# base prompt (--system-prompt-file) and the harness tool protocol is appended on top.
+# Override the binary with WALLBREAKER_CLAUDE_BIN, the file with
+# WALLBREAKER_CLAUDE_SYSTEM_PROMPT_FILE.
+[profiles.claude-code]
+protocol = "claude-code"
+model = "sonnet"
+# system_prompt_file = "/path/to/your/system_prompt.txt"
+
+[target]
+protocol = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "openai/gpt-4o-mini"
+# Pin the OpenRouter backend so results are reproducible (different backends have
+# different safety configs). Single name or a list; allow_fallbacks is disabled.
+# provider = "WandB"
+# provider = ["WandB", "Alibaba"]
+# Per-endpoint request timeout in seconds (default 120). Lower it so a slow/hung
+# backend fails fast instead of stalling a sweep.
+# timeout = 60
+# Ask the target to emit its reasoning / chain-of-thought (works on reasoning models:
+# deepseek-r1, o-series, qwen-thinking, gemini-thinking, Anthropic extended thinking).
+# query_target then surfaces the CoT separately and the judge grades it - models often
+# leak the harmful content in their thinking while the final answer refuses.
+# reasoning = true
+
+# If the target ACCEPTS a system prompt but is hardened against system-level jailbreaks
+# (the model only follows attacks placed in the USER turn), set system_mode = "merge" so
+# the harness folds any system prompt into the first user message. Every attack tool
+# (PAIR, adapt_seed, seed_sweep, firefile, query_target) then delivers the persona via the
+# user channel automatically. Only THIS endpoint is affected - the attacker and judge keep
+# native system prompts. Use "drop" to discard the system prompt; "default" (omit) is native.
+# Toggle live with /target sysmode merge. For input/output classifiers, encode the payload
+# (query_target transforms=) and have the model answer in a cipher, decoded back with
+# query_target response_transforms= so the judge grades the real content.
+# system_mode = "merge"
+
+# To attack an IMAGE-generation model instead, set modality = "image" on [target].
+# Image models ride the same OpenRouter chat-completions API (protocol stays "openai");
+# the harness sends modalities:["image","text"], saves every returned picture under
+# wb_images/, and vision-grades it with the [judge]. Use the query_image_target tool.
+# [target]
+# protocol = "openai"
+# modality = "image"
+# base_url = "https://openrouter.ai/api/v1"
+# api_key_env = "OPENROUTER_API_KEY"
+# model = "google/gemini-2.5-flash-image-preview"   # or black-forest-labs/flux.2-pro
+
+# The judge grades text targets and ALSO vision-grades generated images (does the picture
+# actually depict the objective?). For image targets the judge model MUST be vision-capable
+# (gpt-4o, claude-3.5-sonnet, gemini-2.5-flash, etc.) - a text-only judge can't see the image.
+[judge]
+protocol = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "openai/gpt-4o-mini"
+
+# Optional: a dedicated image-generation endpoint used ONLY by generate_session_card to
+# render a branded "session card" PNG (target/score table) when finish() wraps up an
+# engagement. If omitted, the harness falls back to the 'openrouter' profile (pinned to a
+# default image model) and, if that has no key either, to a local Pillow-rendered card -
+# every session still gets a saved image either way.
+# [art]
+# protocol = "openai"
+# modality = "image"
+# base_url = "https://openrouter.ai/api/v1"
+# api_key_env = "OPENROUTER_API_KEY"
+# model = "google/gemini-3-pro-image"   # or google/gemini-2.5-flash-image-preview
+
+# MCP servers. Each enabled server is spawned over stdio at startup and its tools are
+# proxied into the agent's tool registry (so the model can call them directly).
+#
+# NOTE: the P4RS3LT0NGV3 engine (all 222 transforms + universal decoder + parsel_craft) is
+# now wired in NATIVELY — it appears as parsel_* tools with no server needed, as long as the
+# repo is vendored (`wallbreaker parsel update`) and Node.js is on PATH. The block below is
+# only for running that same engine out-of-process as an MCP server; leave it disabled unless
+# you specifically want that. It re-registers the identical parsel_* names.
+[[mcp.servers]]
+name = "parsel"
+command = "python"
+args = ["-m", "p4rs3lt0ngv3_mcp"]
+enabled = false
+# tool_prefix = ""          # tools are already namespaced parsel_*
+# env = { PARSEL_REPO = "/abs/path/to/P4RS3LT0NGV3" }   # override the vendored repo location
